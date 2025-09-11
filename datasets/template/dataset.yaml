@@ -1,0 +1,8 @@
+# Ultralytics YOLO dataset config for stick tip detection
+# Adjust paths to your data
+path: .
+train: images/train
+val: images/val
+
+names:
+  0: stick_tip
