@@ -1,7 +1,4 @@
-ultralytics
 opencv-python
 numpy
 mediapipe
 scipy
-python-rtmidi
-python-osc
