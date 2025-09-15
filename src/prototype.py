@@ -13,58 +13,11 @@ import cv2
 import mediapipe as mp
 import numpy as np
 
+from calibration import ensure_calibrated
 from tracking.kalman import ConstantAccelerationKalman
+from tracking.smoothing import SimpleSmoother
 
-
-class SimpleSmoother:
-    """Simple smoother for hand tracking."""
-
-    def __init__(self, window_size: int=3) -> None:
-        """Initialize the smoother."""
-        self.positions = []
-        self.velocities = []
-        self.window_size = window_size
-        self.last_time = None
-
-    def update(self, x: float, y: float, dt: float=1/120.0) -> tuple[float, float]:
-        """Update the smoother."""
-        dimension: int = 2
-        self.positions.append((x, y))
-        if len(self.positions) > self.window_size:
-            self.positions.pop(0)
-
-        # Calculate velocity from recent positions
-        if len(self.positions) >= dimension:
-            # velocity in pixels/second using average over window
-            total_dt = max(1e-6, (len(self.positions) - 1) * dt)
-            vx = (self.positions[-1][0] - self.positions[0][0]) / total_dt
-            vy = (self.positions[-1][1] - self.positions[0][1]) / total_dt
-            self.velocities.append((vx, vy))
-
-            if len(self.velocities) > dimension:
-                self.velocities.pop(0)
-
-        # Return smoothed position
-        avg_x = sum(p[0] for p in self.positions) / len(self.positions)
-        avg_y = sum(p[1] for p in self.positions) / len(self.positions)
-
-        return avg_x, avg_y
-
-    def get_position(self) -> tuple[float, float]:
-        """Get the smoothed position."""
-        if not self.positions:
-            return 0, 0
-        avg_x = sum(p[0] for p in self.positions) / len(self.positions)
-        avg_y = sum(p[1] for p in self.positions) / len(self.positions)
-        return avg_x, avg_y
-
-    def get_velocity(self) -> tuple[float, float]:
-        """Get the smoothed velocity."""
-        if not self.velocities:
-            return 0, 0
-        avg_vx = sum(v[0] for v in self.velocities) / len(self.velocities)
-        avg_vy = sum(v[1] for v in self.velocities) / len(self.velocities)
-        return avg_vx, avg_vy
+# SimpleSmoother moved to tracking.smoothing
 
 
 def parse_args() -> argparse.Namespace:
@@ -83,11 +36,13 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--meas_var", type=float, default=10.0,
                     help="Kalman measurement variance (lower = trust MediaPipe more)")
     ap.add_argument("--no_kalman", action="store_true",
-                    help="Use simple smoothing instead of Kalman filter")
+                    help="Use simple smoothing instead of Kalman filter (also used in calibration)")
     ap.add_argument("--smooth_frames", type=int, default=3,
                     help="Number of frames for simple smoothing")
     ap.add_argument("--flip", action="store_true",
                     help="Mirror camera for selfie view")
+    ap.add_argument("--calibrate", action="store_true",
+                    help="Run interactive calibration and save settings")
 
     return ap.parse_args()
 
@@ -141,6 +96,15 @@ def get_hand_landmarks(hands: mp.solutions.hands.Hands, frame_bgr: np.ndarray) -
 def main() -> None:  # noqa: C901, PLR0912, PLR0915
     """Run program."""
     args = parse_args()
+    # Load or run calibration, then override args with calibrated settings
+    settings = ensure_calibrated(allow_interactive=args.calibrate,
+                                camera=args.source,
+                                flip=args.flip,
+                                use_kalman=not args.no_kalman)
+    args.seek_sensitivity = float(settings.get("seek_sensitivity", args.seek_sensitivity))
+    args.volume_sensitivity = float(settings.get("volume_sensitivity", args.volume_sensitivity))
+    args.raise_threshold = float(settings.get("raise_threshold", args.raise_threshold))
+    args.min_velocity = float(settings.get("min_velocity", args.min_velocity))
     cap = open_source(args.source)
 
     differ_volume: float = 0.03
