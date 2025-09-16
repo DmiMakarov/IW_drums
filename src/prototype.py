@@ -7,15 +7,16 @@ It also uses a hit detector to detect when a hand is hit.
 from __future__ import annotations
 
 import argparse
+import logging
 import time
 
 import cv2
 import mediapipe as mp
 import numpy as np
 
-from calibration import ensure_calibrated
-from tracking.kalman import ConstantAccelerationKalman
-from tracking.smoothing import SimpleSmoother
+from src.calibration import ensure_calibrated
+from src.tracking.kalman import ConstantAccelerationKalman
+from src.tracking.smoothing import SimpleSmoother
 
 # SimpleSmoother moved to tracking.smoothing
 
@@ -43,6 +44,9 @@ def parse_args() -> argparse.Namespace:
                     help="Mirror camera for selfie view")
     ap.add_argument("--calibrate", action="store_true",
                     help="Run interactive calibration and save settings")
+    ap.add_argument("--log_level", default="INFO",
+                    choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+                    help="Logging level")
 
     return ap.parse_args()
 
@@ -96,11 +100,18 @@ def get_hand_landmarks(hands: mp.solutions.hands.Hands, frame_bgr: np.ndarray) -
 def main() -> None:  # noqa: C901, PLR0912, PLR0915
     """Run program."""
     args = parse_args()
+    # Configure logging
+    logging.basicConfig(level=getattr(logging, str(args.log_level).upper(), logging.INFO),
+                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logger = logging.getLogger("prototype")
     # Load or run calibration, then override args with calibrated settings
     settings = ensure_calibrated(allow_interactive=args.calibrate,
                                 camera=args.source,
                                 flip=args.flip,
                                 use_kalman=not args.no_kalman)
+    logger.info("Settings loaded: seek_sensitivity=%.4f, volume_sensitivity=%.4f, raise_threshold=%.3f, min_velocity=%.1f",
+                settings.get("seek_sensitivity", 0.0), settings.get("volume_sensitivity", 0.0),
+                settings.get("raise_threshold", 0.0), settings.get("min_velocity", 0.0))
     args.seek_sensitivity = float(settings.get("seek_sensitivity", args.seek_sensitivity))
     args.volume_sensitivity = float(settings.get("volume_sensitivity", args.volume_sensitivity))
     args.raise_threshold = float(settings.get("raise_threshold", args.raise_threshold))
@@ -123,8 +134,10 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
     # Choose tracking method
     if args.no_kalman:
         tracker = SimpleSmoother(window_size=args.smooth_frames)
+        logger.info("Tracker: SimpleSmoother (window_size=%d)", args.smooth_frames)
     else:
         tracker = ConstantAccelerationKalman(dt=1/120.0, process_var=args.process_var, meas_var=args.meas_var)
+        logger.info("Tracker: Kalman (process_var=%.1f, meas_var=%.1f)", args.process_var, args.meas_var)
 
     # Gesture state
     is_playing = False
@@ -184,12 +197,14 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 last_play_toggle_frame = frame_idx
                 # Log command overlay (2 seconds)
                 command_log.append(("PLAY" if is_playing else "PAUSE", time.time() + 2.0))
+                logger.info("Play state toggled -> %s", "ON" if is_playing else "OFF")
 
             # 2) Horizontal movement -> seek delta seconds (only if velocity is significant)
             if abs(vx) > args.min_velocity:
                 # vx is px/s; convert to seconds change using sensitivity (s per px)
                 seek_delta = vx * args.seek_sensitivity * dt
                 seek_position_accum += seek_delta
+                logging.getLogger("gesture").debug("Seek accum updated: vx=%.1f dt=%.3f delta=%.3f accum=%.3f", vx, dt, seek_delta, seek_position_accum)
 
                 if abs(seek_position_accum) > seek_position_threshold:  # announce when >50ms
                     # Log command overlay (1.5 seconds)
@@ -201,6 +216,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             if abs(vy) > args.min_velocity:
                 # vy is px/s; convert to volume delta using sensitivity (volume per px)
                 volume_level = float(np.clip(volume_level - vy * args.volume_sensitivity * dt, 0.0, 1.0))
+                logging.getLogger("gesture").debug("Volume updated: vy=%.1f dt=%.3f level=%.3f", vy, dt, volume_level)
                 # Announce volume occasionally to screen (rate-limited)
                 now_t = time.time()
                 if abs(volume_level - last_volume_shown) >= differ_volume and \
@@ -274,6 +290,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             fps = fps_frames / (t1 - fps_t0)
             fps_t0 = t1
             fps_frames = 0
+            logger.debug("Runtime FPS: %.1f", fps)
             if not args.no_kalman:
                 tracker.dt = max(1e-3, 1.0 / max(1.0, fps))
                 tracker.update_F_H()
