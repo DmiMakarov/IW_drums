@@ -271,7 +271,9 @@ class MusicPlayer(tk.Tk):
             return
         try:
             while True:
-                try:
+                    if self._gesture_queue.empty():
+                        break
+
                     command, value = self._gesture_queue.get_nowait()
                     logger.info("Processing gesture command: %s, value: %s", command, value)
 
@@ -286,9 +288,6 @@ class MusicPlayer(tk.Tk):
                         self.gesture_status_var.set("Gestures: Active" if value else "Gestures: Paused")
                         logger.info("Gesture status updated: %s", "Active" if value else "Paused")
 
-                except queue.Empty:  # noqa: PERF203
-                    logger.exception("Gesture queue is empty")
-                    break
 
         except Exception:
             logger.exception("Error processing gesture queue")
