@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 class MusicPlayer(tk.Tk):
     """Simple Tkinter-based music player using VLC backend."""
 
-    def __init__(self) -> None:
+    def __init__(self) -> None:  # noqa: PLR0915
         """Initialize the music player."""
         super().__init__()
         self.title("IW Drums - Player")
@@ -77,7 +77,11 @@ class MusicPlayer(tk.Tk):
                                            variable=self.gesture_enabled,
                                            command=self.on_toggle_gestures)
         self.btn_gesture.grid(row=0, column=0, padx=4, sticky="w")
-        ttk.Label(gesture_frame, text="Gestures: raise=play/pause").grid(row=0, column=1, sticky="w")
+        ttk.Label(gesture_frame, text="Gestures: raise=play/pause; OK=toggle active").grid(row=0, column=1, sticky="w")
+        # Status label (Active/Paused/Disabled)
+        self.gesture_status_var = tk.StringVar(value="Gestures: Disabled")
+        self.gesture_status_label = ttk.Label(gesture_frame, textvariable=self.gesture_status_var)
+        self.gesture_status_label.grid(row=1, column=0, columnspan=3, sticky="w", padx=4, pady=(2, 0))
 
         self.show_tracking = tk.BooleanVar(value=False)
         self.btn_tracking = ttk.Checkbutton(gesture_frame, text="Show Tracking",
@@ -190,20 +194,23 @@ class MusicPlayer(tk.Tk):
                 on_toggle_play=self._gesture_toggle_play,
                 on_seek_delta=self._gesture_seek_delta,
                 on_volume_delta=self._gesture_volume_delta,
+                on_status_change=self._gesture_status_changed,
                 show_window=bool(self.show_tracking.get()),
             )
             self._gesture_worker.start()
+            self.gesture_status_var.set("Gestures: Active")
             logger.info("Gestures enabled")
         elif not enabled and self._gesture_worker is not None:
             self._gesture_worker.stop()
             self._gesture_worker = None
+            self.gesture_status_var.set("Gestures: Disabled")
             logger.info("Gestures disabled")
 
     def on_tracking_toggle(self) -> None:
         """Launch or stop external tracking viewer process."""
         if bool(self.show_tracking.get()):
             try:
-                self._viewer_proc = subprocess.Popen([sys.executable, "-m", "src.gestures.viewer"], close_fds=True)
+                self._viewer_proc = subprocess.Popen([sys.executable, "-m", "src.gestures.viewer"], close_fds=True)  # noqa: S603
                 logger.info("Gesture viewer launched")
                 # Auto-enable gestures so player receives updates while viewer shows overlay
                 if not self.gesture_enabled.get():
@@ -223,25 +230,29 @@ class MusicPlayer(tk.Tk):
     def _gesture_toggle_play(self) -> None:
         """Toggle play/pause from gesture in the Tk thread."""
         logger.info("Gesture toggle play")
-        self._gesture_queue.put(('toggle_play', None))
+        self._gesture_queue.put(("toggle_play", None))
 
     def on_calibrate(self) -> None:
         """Run calibration in a separate process to avoid GUI conflicts."""
         try:
-            subprocess.Popen([sys.executable, "-m", "src.calibration"], close_fds=True)
+            subprocess.Popen([sys.executable, "-m", "src.calibration"], close_fds=True)  # noqa: S603
             logger.info("Calibration launched in separate process")
         except Exception:
             logger.exception("Failed to launch calibration process")
     def _gesture_seek_delta(self, delta_seconds: float) -> None:
         """Apply seek delta from gesture in the Tk thread."""
         logger.info("Gesture seek delta: %s", delta_seconds)
-        self._gesture_queue.put(('seek_delta', delta_seconds))
+        self._gesture_queue.put(("seek_delta", delta_seconds))
 
     def _gesture_volume_delta(self, delta_volume: float) -> None:
         """Apply volume delta (0..100 scale) from gesture in the Tk thread."""
         logger.info("Gesture volume delta: %s", delta_volume)
         # Put the volume delta in the queue for the main thread to process
-        self._gesture_queue.put(('volume_delta', delta_volume))
+        self._gesture_queue.put(("volume_delta", delta_volume))
+
+    def _gesture_status_changed(self, is_active: bool) -> None:  # noqa: FBT001
+        """Receive gesture active/paused status from worker (thread-safe)."""
+        self._gesture_queue.put(("status", is_active))
 
     def _on_seek_start(self, _event: tk.Event) -> None:
         """Mark that the user started dragging the seek bar."""
@@ -264,15 +275,21 @@ class MusicPlayer(tk.Tk):
                     command, value = self._gesture_queue.get_nowait()
                     logger.info("Processing gesture command: %s, value: %s", command, value)
 
-                    if command == 'volume_delta':
+                    if command == "volume_delta":
                         self._do_volume_delta(value)
-                    elif command == 'seek_delta':
+                    elif command == "seek_delta":
                         self._do_seek_delta(value)
-                    elif command == 'toggle_play':
+                    elif command == "toggle_play":
                         self._do_toggle_play()
+                    elif command == "status":
+                        # value True => active, False => paused
+                        self.gesture_status_var.set("Gestures: Active" if value else "Gestures: Paused")
+                        logger.info("Gesture status updated: %s", "Active" if value else "Paused")
 
-                except queue.Empty:
+                except queue.Empty:  # noqa: PERF203
+                    logger.exception("Gesture queue is empty")
                     break
+
         except Exception:
             logger.exception("Error processing gesture queue")
         finally:

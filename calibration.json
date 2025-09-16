@@ -1,6 +1,6 @@
 {
-  "seek_sensitivity": 0.09859580414193848,
-  "volume_sensitivity": 0.00998559207783691,
-  "raise_threshold": 0.08178595602512359,
-  "min_velocity": 21.986112594604492
+  "seek_sensitivity": 0.09810321998790834,
+  "volume_sensitivity": 0.0016987305866582255,
+  "raise_threshold": 0.14166735410690307,
+  "min_velocity": 7.955129146575928
 }

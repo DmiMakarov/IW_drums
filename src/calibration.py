@@ -75,6 +75,7 @@ def run_basic_calibration(camera: int | str = 0,  # noqa: C901, PLR0912, PLR0915
     """
     cap = None
     break_key: int = 27
+    raise_threshold: float = 0.25
 
     try:
         try:
@@ -187,7 +188,7 @@ def run_basic_calibration(camera: int | str = 0,  # noqa: C901, PLR0912, PLR0915
                 cx, cy = hand
                 tracker_update(cx, cy, dt)
                 rel_y = float(cy / max(1.0, float(h)))
-                if rel_y < 0.25:  # provisional raise threshold for starting
+                if rel_y < raise_threshold:  # provisional raise threshold for starting
                     if held_since is None:
                         held_since = now_t
                     elif (now_t - held_since) >= hold_required:
@@ -329,7 +330,7 @@ def run_basic_calibration(camera: int | str = 0,  # noqa: C901, PLR0912, PLR0915
         # Therefore choose sensitivities so that: delta = v * sensitivity * dt * 100 (volume)
         # reaching ~100 when v = p80 over dt=1s → sensitivity_vol = 1 / p80.
         # For seek, match similar scale: 100s per 1s at p80 → sensitivity_seek = 100 / p80.
-        volume_sensitivity = 20.0 / max(1.0, p80_vy)
+        volume_sensitivity = 1.0 / max(1.0, p80_vy)
         seek_sensitivity = 100.0 / max(1.0, p80_vx)
         # Min velocity so small jitters are ignored: set to 20th percentile of combined samples
         all_abs_v = vy_samples + vx_samples
@@ -392,8 +393,9 @@ if __name__ == "__main__":
     try:
         data = run_basic_calibration()
         save_settings(data)
-        print("Calibration completed and settings saved.")
+        logger.info("Calibration completed and settings saved.")
     except KeyboardInterrupt:
-        print("Calibration cancelled by user.")
-    except Exception as e:  # noqa: BLE001
-        print(f"Calibration failed: {e}")
+        logger.exception("Calibration cancelled by user.")
+    except Exception as e:
+        msg: str = f"Calibration failed: {e}"
+        logger.exception(msg)
