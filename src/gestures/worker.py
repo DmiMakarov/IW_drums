@@ -31,6 +31,7 @@ class GestureWorker:
         on_status_change: Callable[[bool], None] | None = None,
         camera: int | str = 0,
         show_window: bool = False, # noqa: FBT001, FBT002
+        initial_paused: bool = True,
     ) -> None:
         """Initialize the gesture worker."""
         self.on_toggle_play = on_toggle_play
@@ -48,8 +49,8 @@ class GestureWorker:
         self._last_toggle_time = 0.0
         self._toggle_cooldown = 0.35  # seconds
 
-        # Paused mode toggled by FIST gesture
-        self._paused = False
+        # Paused mode toggled by FIST gesture; start paused by default
+        self._paused = bool(initial_paused)
         self._last_fist_time = 0.0
         self._fist_cooldown = 0.8  # seconds
 

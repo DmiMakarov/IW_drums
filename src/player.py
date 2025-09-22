@@ -190,16 +190,61 @@ class MusicPlayer(tk.Tk):
         if self.media is not None:
             self.player.play()
             logger.info("Play")
+            # While audio is playing, fully stop gesture recognition
+            self._auto_disable_gestures_for_playback()
 
     def pause(self) -> None:
         """Pause the current file."""
         self.player.pause()
         logger.info("Pause")
+        # When music is paused/stopped, allow gestures again if enabled
+        self._auto_enable_gestures_if_allowed()
 
     def stop(self) -> None:
         """Stop the current file."""
         self.player.stop()
         logger.info("Stop")
+        # When music is stopped, allow gestures again if enabled
+        self._auto_enable_gestures_if_allowed()
+
+    def _auto_disable_gestures_for_playback(self) -> None:
+        """Disable gesture recognition while music is playing."""
+        try:
+            if self._gesture_worker is not None:
+                self._gesture_worker.stop()
+                self._gesture_worker = None
+                self.gesture_status_var.set("Gestures: Disabled (music playing)")
+            # Also stop viewer if running
+            proc = getattr(self, "_viewer_proc", None)
+            if proc is not None:
+                try:
+                    proc.terminate()
+                except Exception:
+                    logger.exception("Could not stop viewer")
+                self._viewer_proc = None
+        except Exception:
+            logger.exception("Failed to disable gestures for playback")
+
+    def _auto_enable_gestures_if_allowed(self) -> None:
+        """Enable gesture recognition if user toggled it on and nothing is playing."""
+        try:
+            is_playing = bool(self.player.is_playing())
+            if is_playing:
+                return
+            if self.gesture_enabled.get() and self._gesture_worker is None:
+                logger.info("Auto-starting gesture worker (music not playing)")
+                self._gesture_worker = GestureWorker(
+                    on_toggle_play=self._gesture_toggle_play,
+                    on_seek_delta=self._gesture_seek_delta,
+                    on_volume_delta=self._gesture_volume_delta,
+                    on_status_change=self._gesture_status_changed,
+                    show_window=bool(self.show_tracking.get()),
+                    initial_paused=True,
+                )
+                self._gesture_worker.start()
+                self.gesture_status_var.set("Gestures: Paused")
+        except Exception:
+            logger.exception("Failed to enable gestures after stop/pause")
 
     def on_seek(self, _value: str) -> None:
         """Seek to the current position."""
@@ -248,10 +293,17 @@ class MusicPlayer(tk.Tk):
                 on_volume_delta=self._gesture_volume_delta,
                 on_status_change=self._gesture_status_changed,
                 show_window=bool(self.show_tracking.get()),
+                initial_paused=True,
             )
-            self._gesture_worker.start()
-            self.gesture_status_var.set("Gestures: Active")
-            logger.info("Gestures enabled")
+            # If music is currently playing, do not start; mark disabled-by-playback
+            if self.player.is_playing():
+                logger.info("Music is playing; gestures will remain disabled until playback stops")
+                self._gesture_worker = None
+                self.gesture_status_var.set("Gestures: Disabled (music playing)")
+            else:
+                self._gesture_worker.start()
+                self.gesture_status_var.set("Gestures: Paused")
+                logger.info("Gestures enabled")
         elif not enabled and self._gesture_worker is not None:
             self._gesture_worker.stop()
             self._gesture_worker = None
@@ -376,7 +428,10 @@ class MusicPlayer(tk.Tk):
                 elif command == "seek_delta":
                     self._do_seek_delta(value)
                 elif command == "toggle_play":
-                    self._do_toggle_play()
+                    # Ignore play/pause from gestures while audio logic handles it
+                    # But if music is not playing, let it toggle via UI play/pause
+                    if not self.player.is_playing():
+                        self._do_toggle_play()
                 elif command == "status":
                     # value True => active, False => paused
                     self.gesture_status_var.set("Gestures: Active" if value else "Gestures: Paused")
