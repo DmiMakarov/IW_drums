@@ -179,8 +179,8 @@ class GestureWorker:
                         seek_delta = vx * self.seek_sensitivity * dt  # seconds
                         seek_accum += seek_delta
                         if abs(seek_accum) >= self.SEEK_EMIT_THRESHOLD:
-                            logger.info("Seek delta: %s", seek_accum)
-                            self.on_seek_delta(seek_accum)
+                            logger.info("Seek delta: %s", -seek_accum)
+                            self.on_seek_delta(-seek_accum)
                             seek_accum = 0.0
 
                     # Volume by vertical velocity (invert so up increases), only when not paused
