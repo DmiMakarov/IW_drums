@@ -31,6 +31,7 @@ class GestureWorker:
         on_status_change: Callable[[bool], None] | None = None,
         camera: int | str = 0,
         show_window: bool = False, # noqa: FBT001, FBT002
+        initial_paused: bool = True,
     ) -> None:
         """Initialize the gesture worker."""
         self.on_toggle_play = on_toggle_play
@@ -52,6 +53,7 @@ class GestureWorker:
         self._paused = False
         self._last_toggle_time = 0.0
         self._toggle_cooldown_gesture = 0.8  # seconds
+
 
         # Settings (support both src.* and package-relative imports)
         s = load_settings()
