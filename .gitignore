@@ -7,3 +7,4 @@ __pycache__
 *.pyz
 *.pywz
 **/*/__pycache__
+.DS_Store
