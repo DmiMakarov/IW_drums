@@ -11,6 +11,7 @@ from tkinter import filedialog, ttk
 
 import vlc
 
+from src.audio.worker import AudioWorker
 from src.gestures.worker import GestureWorker
 
 # Optional heavy deps are imported lazily inside the gesture worker
@@ -21,7 +22,7 @@ logger = logging.getLogger(__name__)
 class MusicPlayer(tk.Tk):
     """Simple Tkinter-based music player using VLC backend."""
 
-    def __init__(self) -> None:  # noqa: PLR0915
+    def __init__(self) -> None:
         """Initialize the music player."""
         super().__init__()
         self.title("IW Drums - Player")
@@ -69,7 +70,21 @@ class MusicPlayer(tk.Tk):
         self.player.audio_set_volume(80)
         vol_frame.columnconfigure(1, weight=1)
 
-        # Gestures & tools
+        # Audio Recognition for play/pause
+        audio_frame = ttk.Frame(self)
+        audio_frame.pack(fill=tk.X, padx=8, pady=(0, 6))
+        self.audio_enabled = tk.BooleanVar(value=False)
+        self.btn_audio = ttk.Checkbutton(audio_frame, text="Enable Audio Recognition",
+                                         variable=self.audio_enabled,
+                                         command=self.on_toggle_audio)
+        self.btn_audio.grid(row=0, column=0, padx=4, sticky="w")
+        ttk.Label(audio_frame, text="Audio: 3 hits=start music, 1 hit=stop music").grid(row=0, column=1, sticky="w")
+        # Status label (Active/Disabled)
+        self.audio_status_var = tk.StringVar(value="Audio Recognition: Disabled")
+        self.audio_status_label = ttk.Label(audio_frame, textvariable=self.audio_status_var)
+        self.audio_status_label.grid(row=1, column=0, columnspan=3, sticky="w", padx=4, pady=(2, 0))
+
+        # Gestures for seek and volume
         gesture_frame = ttk.Frame(self)
         gesture_frame.pack(fill=tk.X, padx=8, pady=(0, 6))
         self.gesture_enabled = tk.BooleanVar(value=False)
@@ -77,7 +92,8 @@ class MusicPlayer(tk.Tk):
                                            variable=self.gesture_enabled,
                                            command=self.on_toggle_gestures)
         self.btn_gesture.grid(row=0, column=0, padx=4, sticky="w")
-        ttk.Label(gesture_frame, text="Gestures: raise=play/pause; OK=toggle active").grid(row=0, column=1, sticky="w")
+        ttk.Label(gesture_frame, text="Gestures: horizontal=seek, vertical=volume, fist=toggle active").grid(
+            row=0, column=1, sticky="w")
         # Status label (Active/Paused/Disabled)
         self.gesture_status_var = tk.StringVar(value="Gestures: Disabled")
         self.gesture_status_label = ttk.Label(gesture_frame, textvariable=self.gesture_status_var)
@@ -96,7 +112,8 @@ class MusicPlayer(tk.Tk):
         self._running = True
         self._user_seeking = False
 
-        # Thread-safe communication queue
+        # Thread-safe communication queues
+        self._audio_queue = queue.Queue()
         self._gesture_queue = queue.Queue()
 
         # Bind seek interactions to avoid fighting with programmatic updates
@@ -105,13 +122,16 @@ class MusicPlayer(tk.Tk):
 
         # Start UI update loop using Tk's event loop (thread-safe)
         self.after(50, self._update_ui)
+        # Start audio processing loop
+        self.after(10, self._process_audio_queue)
         # Start gesture processing loop
         self.after(10, self._process_gesture_queue)
 
         # Logging
         logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
-        # Gesture worker handle
+        # Worker handles
+        self._audio_worker: AudioWorker | None = None
         self._gesture_worker: GestureWorker | None = None
 
     def destroy(self) -> None:
@@ -121,6 +141,19 @@ class MusicPlayer(tk.Tk):
             self.player.stop()
         except Exception as e:  # noqa: BLE001
             logger.warning("Could not stop player: %s", e)
+        # Stop workers if running
+        try:
+            if self._audio_worker is not None:
+                self._audio_worker.stop()
+        except Exception:
+            logger.exception("Could not stop audio worker")
+
+        try:
+            if self._gesture_worker is not None:
+                self._gesture_worker.stop()
+        except Exception:
+            logger.exception("Could not stop gesture worker")
+
         # Stop viewer if running
         try:
             proc = getattr(self, "_viewer_proc", None)
@@ -185,6 +218,25 @@ class MusicPlayer(tk.Tk):
         except Exception:
             logger.exception("Error setting volume")
 
+    def on_toggle_audio(self) -> None:
+        """Enable or disable audio recognition control."""
+        enabled = bool(self.audio_enabled.get())
+        if enabled and self._audio_worker is None:
+            logger.info("Starting audio worker...")
+            self._audio_worker = AudioWorker(
+                on_start_music=self._audio_start_music,
+                on_stop_music=self._audio_stop_music,
+                on_status_change=self._audio_status_changed,
+            )
+            self._audio_worker.start()
+            self.audio_status_var.set("Audio Recognition: Active")
+            logger.info("Audio recognition enabled")
+        elif not enabled and self._audio_worker is not None:
+            self._audio_worker.stop()
+            self._audio_worker = None
+            self.audio_status_var.set("Audio Recognition: Disabled")
+            logger.info("Audio recognition disabled")
+
     def on_toggle_gestures(self) -> None:
         """Enable or disable gesture control."""
         enabled = bool(self.gesture_enabled.get())
@@ -227,11 +279,6 @@ class MusicPlayer(tk.Tk):
                     logger.exception("Could not stop viewer")
                 self._viewer_proc = None
 
-    def _gesture_toggle_play(self) -> None:
-        """Toggle play/pause from gesture in the Tk thread."""
-        logger.info("Gesture toggle play")
-        self._gesture_queue.put(("toggle_play", None))
-
     def on_calibrate(self) -> None:
         """Run calibration in a separate process to avoid GUI conflicts."""
         try:
@@ -239,6 +286,26 @@ class MusicPlayer(tk.Tk):
             logger.info("Calibration launched in separate process")
         except Exception:
             logger.exception("Failed to launch calibration process")
+
+    def _audio_start_music(self) -> None:
+        """Start music from audio recognition in the Tk thread."""
+        logger.info("Audio recognition: starting music")
+        self._audio_queue.put(("start_music", None))
+
+    def _audio_stop_music(self) -> None:
+        """Stop music from audio recognition in the Tk thread."""
+        logger.info("Audio recognition: stopping music")
+        self._audio_queue.put(("stop_music", None))
+
+    def _audio_status_changed(self, is_active: bool) -> None:  # noqa: FBT001
+        """Receive audio recognition active status from worker (thread-safe)."""
+        self._audio_queue.put(("status", is_active))
+
+    def _gesture_toggle_play(self) -> None:
+        """Toggle play/pause from gesture in the Tk thread."""
+        logger.info("Gesture toggle play")
+        self._gesture_queue.put(("toggle_play", None))
+
     def _gesture_seek_delta(self, delta_seconds: float) -> None:
         """Apply seek delta from gesture in the Tk thread."""
         logger.info("Gesture seek delta: %s", delta_seconds)
@@ -265,35 +332,81 @@ class MusicPlayer(tk.Tk):
         finally:
             self._user_seeking = False
 
+    def _process_audio_queue(self) -> None:
+        """Process queued audio commands in the main Tk thread."""
+        if not self._running:
+            return
+        try:
+            while True:
+                if self._audio_queue.empty():
+                    break
+
+                command, value = self._audio_queue.get_nowait()
+                logger.info("Processing audio command: %s, value: %s", command, value)
+
+                if command == "start_music":
+                    self._do_start_music()
+                elif command == "stop_music":
+                    self._do_stop_music()
+                elif command == "status":
+                    # value True => active, False => inactive
+                    self.audio_status_var.set("Audio Recognition: Active" if value else "Audio Recognition: Inactive")
+                    logger.info("Audio status updated: %s", "Active" if value else "Inactive")
+
+        except Exception:
+            logger.exception("Error processing audio queue")
+        finally:
+            # Schedule next check
+            self.after(10, self._process_audio_queue)
+
     def _process_gesture_queue(self) -> None:
         """Process queued gesture commands in the main Tk thread."""
         if not self._running:
             return
         try:
             while True:
-                    if self._gesture_queue.empty():
-                        break
+                if self._gesture_queue.empty():
+                    break
 
-                    command, value = self._gesture_queue.get_nowait()
-                    logger.info("Processing gesture command: %s, value: %s", command, value)
+                command, value = self._gesture_queue.get_nowait()
+                logger.info("Processing gesture command: %s, value: %s", command, value)
 
-                    if command == "volume_delta":
-                        self._do_volume_delta(value)
-                    elif command == "seek_delta":
-                        self._do_seek_delta(value)
-                    elif command == "toggle_play":
-                        self._do_toggle_play()
-                    elif command == "status":
-                        # value True => active, False => paused
-                        self.gesture_status_var.set("Gestures: Active" if value else "Gestures: Paused")
-                        logger.info("Gesture status updated: %s", "Active" if value else "Paused")
-
+                if command == "volume_delta":
+                    self._do_volume_delta(value)
+                elif command == "seek_delta":
+                    self._do_seek_delta(value)
+                elif command == "toggle_play":
+                    self._do_toggle_play()
+                elif command == "status":
+                    # value True => active, False => paused
+                    self.gesture_status_var.set("Gestures: Active" if value else "Gestures: Paused")
+                    logger.info("Gesture status updated: %s", "Active" if value else "Paused")
 
         except Exception:
             logger.exception("Error processing gesture queue")
         finally:
             # Schedule next check
             self.after(10, self._process_gesture_queue)
+
+    def _do_start_music(self) -> None:
+        """Start music in the main Tk thread."""
+        try:
+            if not self.player.is_playing():
+                self.play()
+                logger.info("Music started by audio recognition")
+        except Exception:
+            logger.exception("Error in _do_start_music")
+
+    def _do_stop_music(self) -> None:
+        """Stop music in the main Tk thread."""
+        try:
+            # Use pause instead of stop so playback can resume from the same position
+            state = self.player.get_state()
+            if state is not None and state != vlc.State.NothingSpecial:
+                self.pause()
+                logger.info("Music paused by audio recognition")
+        except Exception:
+            logger.exception("Error in _do_stop_music")
 
     def _do_volume_delta(self, delta_volume: float) -> None:
         """Apply volume delta in the main Tk thread."""
