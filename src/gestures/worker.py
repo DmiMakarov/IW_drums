@@ -48,10 +48,10 @@ class GestureWorker:
         self._last_toggle_time = 0.0
         self._toggle_cooldown = 0.35  # seconds
 
-        # Paused mode toggled by FIST gesture
+        # Paused mode toggled by "V" gesture (index+middle extended)
         self._paused = False
-        self._last_fist_time = 0.0
-        self._fist_cooldown = 0.8  # seconds
+        self._last_toggle_time = 0.0
+        self._toggle_cooldown_gesture = 0.8  # seconds
 
         # Settings (support both src.* and package-relative imports)
         s = load_settings()
@@ -65,6 +65,8 @@ class GestureWorker:
         # spread_threshold: index-MCP to pinky-MCP distance / hand_size to ensure palm is not widely spread
         self.finger_fold_threshold = float(s.get("finger_fold_threshold", 0.35))
         self.spread_threshold = float(s.get("spread_threshold", 1.4))
+        # V-sign detection: required separation (tips) between index and middle relative to hand size
+        self.v_separation_threshold = float(s.get("v_separation_threshold", 0.5))
 
     def start(self) -> None:
         """Start the gesture worker."""
@@ -123,7 +125,7 @@ class GestureWorker:
                     smoother.update(cx, cy, dt=dt)
                     vx, vy = smoother.get_velocity()  # px/s
 
-                    # FIST detection to toggle paused mode
+                    # V-sign detection to toggle paused mode
                     try:
                         # Hand size proxy: wrist (0) to middle MCP (9)
                         wrist = landmarks[0]
@@ -131,38 +133,66 @@ class GestureWorker:
                         hand_size = max(1e-3, ((mid_mcp[0] - wrist[0]) ** 2 + (mid_mcp[1] - wrist[1]) ** 2) ** 0.5)
 
                         # Per-finger tip-to-MCP distances (thumb uses 4-2, others tip-[MCP])
-                        finger_pairs = [(4, 2), (8, 5), (12, 9), (16, 13), (20, 17)]
-                        folded_count = 0
-                        for tip_idx, mcp_idx in finger_pairs:
-                            tx, ty = landmarks[tip_idx]
-                            mx, my = landmarks[mcp_idx]
-                            d = ((tx - mx) ** 2 + (ty - my) ** 2) ** 0.5
-                            if (d / hand_size) < self.finger_fold_threshold:
-                                folded_count += 1
+                        # Compute folded flags per finger without inner defs (for linter)
+                        ix_tip_x, ix_tip_y = landmarks[8]
+                        ix_mcp_x, ix_mcp_y = landmarks[5]
+                        mid_tip_x, mid_tip_y = landmarks[12]
+                        mid_mcp_x, mid_mcp_y = landmarks[9]
+                        ring_tip_x, ring_tip_y = landmarks[16]
+                        ring_mcp_x, ring_mcp_y = landmarks[13]
+                        pky_tip_x, pky_tip_y = landmarks[20]
+                        pky_mcp_x, pky_mcp_y = landmarks[17]
 
-                        # Palm spread between index MCP (5) and pinky MCP (17)
-                        idx_mcp = landmarks[5]
-                        pky_mcp = landmarks[17]
-                        spread = ((idx_mcp[0] - pky_mcp[0]) ** 2 + (idx_mcp[1] - pky_mcp[1]) ** 2) ** 0.5
-                        spread_ratio = spread / hand_size
+                        ix_ratio = (
+                            ((ix_tip_x - ix_mcp_x) ** 2 + (ix_tip_y - ix_mcp_y) ** 2) ** 0.5
+                        ) / hand_size
+                        mid_ratio = (
+                            ((mid_tip_x - mid_mcp_x) ** 2 + (mid_tip_y - mid_mcp_y) ** 2) ** 0.5
+                        ) / hand_size
+                        ring_ratio = (
+                            ((ring_tip_x - ring_mcp_x) ** 2 + (ring_tip_y - ring_mcp_y) ** 2) ** 0.5
+                        ) / hand_size
+                        pky_ratio = (
+                            ((pky_tip_x - pky_mcp_x) ** 2 + (pky_tip_y - pky_mcp_y) ** 2) ** 0.5
+                        ) / hand_size
 
-                        # Consider fist if at least 3 fingers folded and palm not widely spread
-                        is_fist = (folded_count >= self.folded_count_threshold) and \
-                                  (spread_ratio < self.spread_threshold)
-                        if is_fist and (now - self._last_fist_time) > self._fist_cooldown:
-                            self._last_fist_time = now
+                        index_folded = ix_ratio < self.finger_fold_threshold
+                        middle_folded = mid_ratio < self.finger_fold_threshold
+                        ring_folded = ring_ratio < self.finger_fold_threshold
+                        pinky_folded = pky_ratio < self.finger_fold_threshold
+
+                        # Separation between index and middle tips
+                        ix, iy = landmarks[8]
+                        mx, my = landmarks[12]
+                        separation = ((ix - mx) ** 2 + (iy - my) ** 2) ** 0.5
+                        sep_ratio = separation / hand_size
+
+                        # V-sign criteria: index & middle extended, ring & pinky folded, thumb don't-care
+                        is_v_sign = (
+                            (not index_folded)
+                            and (not middle_folded)
+                            and ring_folded
+                            and pinky_folded
+                            and (sep_ratio >= self.v_separation_threshold)
+                        )
+
+                        if is_v_sign and (now - self._last_toggle_time) > self._toggle_cooldown_gesture:
+                            self._last_toggle_time = now
                             self._paused = not self._paused
-                            logger.info("FIST detected (folded=%s, spread=%.2f<th=%.2f). Gestures %s",
-                                        folded_count, spread_ratio, self.spread_threshold,
-                                        "PAUSED" if self._paused else "ACTIVE")
+                            logger.info(
+                                "V-sign detected (sep=%.2f>=%.2f, ring/pinky folded).",
+                                sep_ratio,
+                                self.v_separation_threshold,
+                            )
+                            logger.info("Gestures %s", "PAUSED" if self._paused else "ACTIVE")
                             if self.on_status_change is not None:
                                 try:
                                     self.on_status_change(not self._paused)
                                 except Exception:
                                     logger.exception("on_status_change callback failed")
                     except Exception:
-                        # If any keypoint missing, ignore fist gesture silently
-                        logger.exception("Fist gesture detection failed")
+                        # If any keypoint missing, ignore silently
+                        logger.exception("V-sign gesture detection failed")
 
                     # Toggle play on raise (only when not paused)
                     rel_y = cy / max(1.0, float(h))

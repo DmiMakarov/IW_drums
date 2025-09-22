@@ -92,7 +92,7 @@ class MusicPlayer(tk.Tk):
                                            variable=self.gesture_enabled,
                                            command=self.on_toggle_gestures)
         self.btn_gesture.grid(row=0, column=0, padx=4, sticky="w")
-        ttk.Label(gesture_frame, text="Gestures: horizontal=seek, vertical=volume, fist=toggle active").grid(
+        ttk.Label(gesture_frame, text="Gestures: horizontal=seek, vertical=volume, V-sign=toggle active").grid(
             row=0, column=1, sticky="w")
         # Status label (Active/Paused/Disabled)
         self.gesture_status_var = tk.StringVar(value="Gestures: Disabled")
