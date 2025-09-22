@@ -65,8 +65,11 @@ class GestureWorker:
         # spread_threshold: index-MCP to pinky-MCP distance / hand_size to ensure palm is not widely spread
         self.finger_fold_threshold = float(s.get("finger_fold_threshold", 0.35))
         self.spread_threshold = float(s.get("spread_threshold", 1.4))
-        # V-sign detection: required separation (tips) between index and middle relative to hand size
-        self.v_separation_threshold = float(s.get("v_separation_threshold", 0.5))
+        # V-sign detection tuning
+        # Required separation (tips) between index and middle relative to hand size
+        self.v_separation_threshold = float(s.get("v_separation_threshold", 0.25))
+        # Vertical margin so a finger counts as "up" if tip is this much above PIP
+        self.v_vertical_margin = float(s.get("v_vertical_margin", 0.02))
 
     def start(self) -> None:
         """Start the gesture worker."""
@@ -128,38 +131,29 @@ class GestureWorker:
                     # V-sign detection to toggle paused mode
                     try:
                         # Hand size proxy: wrist (0) to middle MCP (9)
-                        wrist = landmarks[0]
-                        mid_mcp = landmarks[9]
-                        hand_size = max(1e-3, ((mid_mcp[0] - wrist[0]) ** 2 + (mid_mcp[1] - wrist[1]) ** 2) ** 0.5)
-
-                        # Per-finger tip-to-MCP distances (thumb uses 4-2, others tip-[MCP])
-                        # Compute folded flags per finger without inner defs (for linter)
-                        ix_tip_x, ix_tip_y = landmarks[8]
-                        ix_mcp_x, ix_mcp_y = landmarks[5]
-                        mid_tip_x, mid_tip_y = landmarks[12]
+                        wrist_x, wrist_y = landmarks[0]
                         mid_mcp_x, mid_mcp_y = landmarks[9]
-                        ring_tip_x, ring_tip_y = landmarks[16]
-                        ring_mcp_x, ring_mcp_y = landmarks[13]
-                        pky_tip_x, pky_tip_y = landmarks[20]
-                        pky_mcp_x, pky_mcp_y = landmarks[17]
+                        hand_size = max(
+                            1e-3,
+                            ((mid_mcp_x - wrist_x) ** 2 + (mid_mcp_y - wrist_y) ** 2) ** 0.5,
+                        )
 
-                        ix_ratio = (
-                            ((ix_tip_x - ix_mcp_x) ** 2 + (ix_tip_y - ix_mcp_y) ** 2) ** 0.5
-                        ) / hand_size
-                        mid_ratio = (
-                            ((mid_tip_x - mid_mcp_x) ** 2 + (mid_tip_y - mid_mcp_y) ** 2) ** 0.5
-                        ) / hand_size
-                        ring_ratio = (
-                            ((ring_tip_x - ring_mcp_x) ** 2 + (ring_tip_y - ring_mcp_y) ** 2) ** 0.5
-                        ) / hand_size
-                        pky_ratio = (
-                            ((pky_tip_x - pky_mcp_x) ** 2 + (pky_tip_y - pky_mcp_y) ** 2) ** 0.5
-                        ) / hand_size
+                        # Simple finger "up" detection using tip above PIP (lower y means higher)
+                        # Index: tip 8, pip 6; Middle: tip 12, pip 10; Ring: tip 16, pip 14; Pinky: tip 20, pip 18
+                        _, idx_tip_y = landmarks[8]
+                        _, idx_pip_y = landmarks[6]
+                        _, mid_tip_y = landmarks[12]
+                        _, mid_pip_y = landmarks[10]
+                        _, ring_tip_y = landmarks[16]
+                        _, ring_pip_y = landmarks[14]
+                        _, pky_tip_y = landmarks[20]
+                        _, pky_pip_y = landmarks[18]
 
-                        index_folded = ix_ratio < self.finger_fold_threshold
-                        middle_folded = mid_ratio < self.finger_fold_threshold
-                        ring_folded = ring_ratio < self.finger_fold_threshold
-                        pinky_folded = pky_ratio < self.finger_fold_threshold
+                        m = self.v_vertical_margin
+                        index_up = (idx_tip_y + m) < idx_pip_y
+                        middle_up = (mid_tip_y + m) < mid_pip_y
+                        ring_up = (ring_tip_y + m) < ring_pip_y
+                        pinky_up = (pky_tip_y + m) < pky_pip_y
 
                         # Separation between index and middle tips
                         ix, iy = landmarks[8]
@@ -167,12 +161,9 @@ class GestureWorker:
                         separation = ((ix - mx) ** 2 + (iy - my) ** 2) ** 0.5
                         sep_ratio = separation / hand_size
 
-                        # V-sign criteria: index & middle extended, ring & pinky folded, thumb don't-care
+                        # V-sign criteria: index & middle up; ring & pinky down; tips sufficiently apart
                         is_v_sign = (
-                            (not index_folded)
-                            and (not middle_folded)
-                            and ring_folded
-                            and pinky_folded
+                            index_up and middle_up and (not ring_up) and (not pinky_up)
                             and (sep_ratio >= self.v_separation_threshold)
                         )
 
