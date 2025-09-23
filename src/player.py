@@ -99,6 +99,7 @@ class MusicPlayer(tk.Tk):
         self.gesture_status_label = ttk.Label(gesture_frame, textvariable=self.gesture_status_var)
         self.gesture_status_label.grid(row=1, column=0, columnspan=3, sticky="w", padx=4, pady=(2, 0))
 
+        # Show tracking window toggle
         self.show_tracking = tk.BooleanVar(value=False)
         self.btn_tracking = ttk.Checkbutton(gesture_frame, text="Show Tracking",
                                             variable=self.show_tracking,
@@ -287,6 +288,15 @@ class MusicPlayer(tk.Tk):
         enabled = bool(self.gesture_enabled.get())
         if enabled and self._gesture_worker is None:
             logger.info("Starting gesture worker...")
+            # If the tracking viewer is open, close it to free the camera
+            proc = getattr(self, "_viewer_proc", None)
+            if proc is not None:
+                try:
+                    proc.terminate()
+                    logger.info("Closed viewer to start gesture worker (free camera)")
+                except Exception:
+                    logger.exception("Could not stop viewer")
+                self._viewer_proc = None
             self._gesture_worker = GestureWorker(
                 on_toggle_play=self._gesture_toggle_play,
                 on_seek_delta=self._gesture_seek_delta,
@@ -304,22 +314,36 @@ class MusicPlayer(tk.Tk):
                 self._gesture_worker.start()
                 self.gesture_status_var.set("Gestures: Paused")
                 logger.info("Gestures enabled")
+                # Do not run viewer concurrently with gesture worker to avoid camera conflicts
         elif not enabled and self._gesture_worker is not None:
             self._gesture_worker.stop()
             self._gesture_worker = None
             self.gesture_status_var.set("Gestures: Disabled")
             logger.info("Gestures disabled")
+            # Stop viewer if it is running to match disabled state
+            proc = getattr(self, "_viewer_proc", None)
+            if proc is not None:
+                try:
+                    proc.terminate()
+                except Exception:
+                    logger.exception("Could not stop viewer")
+                self._viewer_proc = None
 
     def on_tracking_toggle(self) -> None:
         """Launch or stop external tracking viewer process."""
         if bool(self.show_tracking.get()):
             try:
+                # If gestures are running, stop them to free the camera for the viewer
+                if self._gesture_worker is not None:
+                    try:
+                        self._gesture_worker.stop()
+                        self._gesture_worker = None
+                        self.gesture_status_var.set("Gestures: Disabled (viewer active)")
+                        logger.info("Disabled gestures while viewer is active")
+                    except Exception:
+                        logger.exception("Failed to stop gesture worker for viewer")
                 self._viewer_proc = subprocess.Popen([sys.executable, "-m", "src.gestures.viewer"], close_fds=True)  # noqa: S603
                 logger.info("Gesture viewer launched")
-                # Auto-enable gestures so player receives updates while viewer shows overlay
-                if not self.gesture_enabled.get():
-                    self.gesture_enabled.set(True)
-                    self.on_toggle_gestures()
             except Exception:
                 logger.exception("Failed to launch gesture viewer")
         else:

@@ -60,6 +60,11 @@ def main() -> None:  # noqa: C901, PLR0915, PLR0912
     exit_key: int = 27 # ESC
 
     try:
+        # Ensure window is created explicitly before first imshow
+        try:
+            cv2.namedWindow("Gesture Viewer", cv2.WINDOW_NORMAL)
+        except Exception:
+            logger.exception("Could not create named window; continuing with imshow")
         while True:
             ok, frame = cap.read()
             if not ok:
