@@ -52,11 +52,46 @@ class MusicPlayer(tk.Tk):
         self.btn_stop = ttk.Button(controls, text="Stop", command=self.stop)
         self.btn_stop.grid(row=0, column=3, padx=4)
 
-        # Seek bar
+        # Seek bar + loop markers
+        seek_container = ttk.Frame(self)
+        seek_container.pack(fill=tk.X, padx=10, pady=8)
+
         self.position_var = tk.DoubleVar(value=0.0)
-        self.scale = ttk.Scale(self, from_=0.0, to=1000.0, orient=tk.HORIZONTAL,
-                               variable=self.position_var, command=self.on_seek)
-        self.scale.pack(fill=tk.X, padx=10, pady=8)
+        self.scale = ttk.Scale(
+            seek_container,
+            from_=0.0,
+            to=1000.0,
+            orient=tk.HORIZONTAL,
+            variable=self.position_var,
+            command=self.on_seek,
+        )
+        self.scale.grid(row=0, column=0, sticky="ew")
+
+        loop_bar = ttk.Frame(seek_container)
+        loop_bar.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        loop_bar.columnconfigure(1, weight=1)
+
+        ttk.Label(loop_bar, text="Loop A:").grid(row=0, column=0, sticky="w")
+        self.loop_a_var = tk.StringVar(value="--")
+        self.loop_a_label = ttk.Label(loop_bar, width=10, textvariable=self.loop_a_var)
+        self.loop_a_label.grid(row=0, column=1, sticky="w")
+
+        ttk.Label(loop_bar, text="Loop B:").grid(row=0, column=2, sticky="w", padx=(12, 0))
+        self.loop_b_var = tk.StringVar(value="--")
+        self.loop_b_label = ttk.Label(loop_bar, width=10, textvariable=self.loop_b_var)
+        self.loop_b_label.grid(row=0, column=3, sticky="w")
+
+        ttk.Label(loop_bar, text="State:").grid(row=0, column=4, sticky="w", padx=(12, 0))
+        self.loop_state_var = tk.StringVar(value="Off")
+        self.loop_status_var = tk.StringVar(value="Inactive")
+
+        loop_state = ttk.Label(loop_bar, textvariable=self.loop_state_var, width=12)
+        loop_state.grid(row=0, column=5, sticky="w", padx=(12, 0))
+
+        loop_status = ttk.Label(loop_bar, textvariable=self.loop_status_var, width=12)
+        loop_status.grid(row=0, column=6, sticky="w")
+
+        seek_container.columnconfigure(0, weight=1)
 
         # Volume
         vol_frame = ttk.Frame(self)
@@ -133,6 +168,13 @@ class MusicPlayer(tk.Tk):
         # Worker handles
         self._audio_worker: AudioWorker | None = None
         self._gesture_worker: GestureWorker | None = None
+
+        # Loop A/B state (milliseconds)
+        self._loop_a_ms: int | None = None
+        self._loop_b_ms: int | None = None
+        self._loop_enabled: bool = False
+
+        self._update_loop_labels()
 
     def destroy(self) -> None:
         """Destroy the music player."""
@@ -237,6 +279,9 @@ class MusicPlayer(tk.Tk):
                     on_toggle_play=self._gesture_toggle_play,
                     on_seek_delta=self._gesture_seek_delta,
                     on_volume_delta=self._gesture_volume_delta,
+                    on_loop_set_a=self._gesture_loop_set_a,
+                    on_loop_set_b=self._gesture_loop_set_b,
+                    on_loop_clear=self._gesture_loop_clear,
                     on_status_change=self._gesture_status_changed,
                     show_window=bool(self.show_tracking.get()),
                     initial_paused=True,
@@ -291,6 +336,9 @@ class MusicPlayer(tk.Tk):
                 on_toggle_play=self._gesture_toggle_play,
                 on_seek_delta=self._gesture_seek_delta,
                 on_volume_delta=self._gesture_volume_delta,
+                on_loop_set_a=self._gesture_loop_set_a,
+                on_loop_set_b=self._gesture_loop_set_b,
+                on_loop_clear=self._gesture_loop_clear,
                 on_status_change=self._gesture_status_changed,
                 show_window=bool(self.show_tracking.get()),
                 initial_paused=True,
@@ -309,6 +357,8 @@ class MusicPlayer(tk.Tk):
             self._gesture_worker = None
             self.gesture_status_var.set("Gestures: Disabled")
             logger.info("Gestures disabled")
+
+        # Also (re)configure auto-enable worker template to include loop callbacks
 
     def on_tracking_toggle(self) -> None:
         """Launch or stop external tracking viewer process."""
@@ -436,6 +486,12 @@ class MusicPlayer(tk.Tk):
                     # value True => active, False => paused
                     self.gesture_status_var.set("Gestures: Active" if value else "Gestures: Paused")
                     logger.info("Gesture status updated: %s", "Active" if value else "Paused")
+                elif command == "loop_set_a":
+                    self._do_loop_set_a()
+                elif command == "loop_set_b":
+                    self._do_loop_set_b()
+                elif command == "loop_clear":
+                    self._do_loop_clear()
 
         except Exception:
             logger.exception("Error processing gesture queue")
@@ -499,6 +555,64 @@ class MusicPlayer(tk.Tk):
         except Exception:
             logger.exception("Error in _do_seek_delta")
 
+    def _gesture_loop_set_a(self) -> None:
+        """Queue: set loop point A to current position."""
+        self._gesture_queue.put(("loop_set_a", None))
+
+    def _gesture_loop_set_b(self) -> None:
+        """Queue: set loop point B to current position."""
+        self._gesture_queue.put(("loop_set_b", None))
+
+    def _gesture_loop_clear(self) -> None:
+        """Queue: clear loop points."""
+        self._gesture_queue.put(("loop_clear", None))
+
+    def _get_current_time_ms(self) -> int | None:
+        try:
+            t = self.player.get_time()
+            if t is None or t < 0:
+                pos = self.player.get_position() or 0.0
+                length_ms = self.player.get_length() or 0
+                return int(pos * max(0, length_ms)) if length_ms > 0 else None
+            return int(t)
+        except Exception:
+            logger.exception("Could not read current time")
+            return None
+
+    def _do_loop_set_a(self) -> None:
+        t = self._get_current_time_ms()
+        if t is None:
+            return
+        self._loop_a_ms = t
+        logger.info("Loop A set at %d ms", t)
+        # Enable loop only when both points are valid and ordered
+        if self._loop_b_ms is not None:
+            if self._loop_b_ms <= self._loop_a_ms:
+                # swap to keep A < B
+                self._loop_a_ms, self._loop_b_ms = self._loop_b_ms, self._loop_a_ms
+            self._loop_enabled = True
+        self._update_loop_labels()
+
+    def _do_loop_set_b(self) -> None:
+        t = self._get_current_time_ms()
+        if t is None:
+            return
+        self._loop_b_ms = t
+        logger.info("Loop B set at %d ms", t)
+        if self._loop_a_ms is not None:
+            if self._loop_b_ms <= self._loop_a_ms:
+                # swap to keep A < B
+                self._loop_a_ms, self._loop_b_ms = self._loop_b_ms, self._loop_a_ms
+            self._loop_enabled = True
+        self._update_loop_labels()
+
+    def _do_loop_clear(self) -> None:
+        logger.info("Loop cleared")
+        self._loop_a_ms = None
+        self._loop_b_ms = None
+        self._loop_enabled = False
+        self._update_loop_labels()
+
     def _do_toggle_play(self) -> None:
         """Toggle play/pause in the main Tk thread."""
         try:
@@ -516,6 +630,17 @@ class MusicPlayer(tk.Tk):
         try:
             state = self.player.get_state()
             if state is not None and state != vlc.State.NothingSpecial:
+                # Enforce loop if enabled
+                if self._loop_enabled and self._loop_a_ms is not None and self._loop_b_ms is not None:
+                    cur = self._get_current_time_ms()
+                    if cur is not None and cur >= self._loop_b_ms:
+                        # Jump back near A (small offset to avoid sticky boundary)
+                        target = max(0, self._loop_a_ms)
+                        try:
+                            self.player.set_time(int(target))
+                        except Exception:
+                            logger.exception("Failed to loop back to A")
+
                 pos = self.player.get_position()
                 if (
                     not self._user_seeking
@@ -526,11 +651,40 @@ class MusicPlayer(tk.Tk):
                 ):
                     # Update scale position without triggering seek jitter
                     self.position_var.set(pos * 1000.0)
+            self._update_loop_labels()
         except Exception:
             logger.exception("Error updating UI")
         finally:
             # Schedule next update
             self.after(50, self._update_ui)
+
+    def _format_ms(self, value: int | None) -> str:
+        """Format milliseconds to mm:ss.m."""
+        if value is None:
+            return "--"
+        seconds = max(0.0, value / 1000.0)
+        minutes = int(seconds // 60)
+        remainder = seconds % 60
+        return f"{minutes:02d}:{remainder:04.1f}"
+
+    def _compute_loop_status(self) -> tuple[str, str]:
+        if self._loop_enabled and self._loop_a_ms is not None and self._loop_b_ms is not None:
+            a = self._loop_a_ms
+            b = self._loop_b_ms
+            if b <= a:
+                a, b = b, a
+            duration_ms = max(0, b - a)
+            return "Active", f"{duration_ms / 1000.0:.1f}s"
+        if self._loop_a_ms is not None or self._loop_b_ms is not None:
+            return "Pending", "--"
+        return "Off", "Inactive"
+
+    def _update_loop_labels(self) -> None:
+        self.loop_a_var.set(self._format_ms(self._loop_a_ms))
+        self.loop_b_var.set(self._format_ms(self._loop_b_ms))
+        state_text, status_text = self._compute_loop_status()
+        self.loop_state_var.set(state_text)
+        self.loop_status_var.set(status_text)
 
 
 

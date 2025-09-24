@@ -28,6 +28,7 @@ DEFAULT_SETTINGS = {
     "volume_sensitivity": 0.004,    # volume per pixel
     "raise_threshold": 0.25,        # relative height (0..1 from top)
     "min_velocity": 120.0,          # px/s threshold for gestures
+    "swap_hands": False,
 }
 
 logger = logging.getLogger(__name__)
