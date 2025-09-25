@@ -113,7 +113,7 @@ class MusicPlayer(tk.Tk):
                                          variable=self.audio_enabled,
                                          command=self.on_toggle_audio)
         self.btn_audio.grid(row=0, column=0, padx=4, sticky="w")
-        ttk.Label(audio_frame, text="Audio: 3 hits=start music, 1 hit=stop music").grid(row=0, column=1, sticky="w")
+        ttk.Label(audio_frame, text="Audio: 4 hits=start music, 2 hits=stop music").grid(row=0, column=1, sticky="w")
         # Status label (Active/Disabled)
         self.audio_status_var = tk.StringVar(value="Audio Recognition: Disabled")
         self.audio_status_label = ttk.Label(audio_frame, textvariable=self.audio_status_var)
@@ -232,6 +232,9 @@ class MusicPlayer(tk.Tk):
         if self.media is not None:
             self.player.play()
             logger.info("Play")
+            # Sync audio worker state
+            if self._audio_worker is not None:
+                self._audio_worker.sync_music_state(is_playing=True)
             # While audio is playing, fully stop gesture recognition
             self._auto_disable_gestures_for_playback()
 
@@ -239,6 +242,9 @@ class MusicPlayer(tk.Tk):
         """Pause the current file."""
         self.player.pause()
         logger.info("Pause")
+        # Sync audio worker state
+        if self._audio_worker is not None:
+            self._audio_worker.sync_music_state(is_playing=False)
         # When music is paused/stopped, allow gestures again if enabled
         self._auto_enable_gestures_if_allowed()
 
@@ -246,6 +252,9 @@ class MusicPlayer(tk.Tk):
         """Stop the current file."""
         self.player.stop()
         logger.info("Stop")
+        # Sync audio worker state
+        if self._audio_worker is not None:
+            self._audio_worker.sync_music_state(is_playing=False)
         # When music is stopped, allow gestures again if enabled
         self._auto_enable_gestures_if_allowed()
 
@@ -319,7 +328,7 @@ class MusicPlayer(tk.Tk):
                 on_status_change=self._audio_status_changed,
             )
             self._audio_worker.start()
-            self.audio_status_var.set("Audio Recognition: Active")
+            # Status will be set by the worker's on_status_change callback
             logger.info("Audio recognition enabled")
         elif not enabled and self._audio_worker is not None:
             self._audio_worker.stop()

@@ -58,8 +58,11 @@ class AudioWorker:
         # Hit counting logic
         self._hit_times: list[float] = []
         self._hit_window = 2.0  # seconds to consider hits for pattern detection
-        self._min_hits_for_start = 3
+        self._min_hits_for_start = 4  # Changed from 3 to 4 as requested
+        self._min_hits_for_stop = 2  # Require 2 hits to stop music
         self._music_playing = False
+        self._music_start_time: float | None = None  # Track when music was started
+        self._start_grace_period = 1.5  # seconds to ignore stop hits after starting music
 
     def _resolve_device(self, device: str) -> torch.device:
         """Resolve device string to torch device."""
@@ -74,10 +77,26 @@ class AudioWorker:
         self._running = True
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
+        # Set status to active when worker starts
+        if self.on_status_change is not None:
+            self.on_status_change(True)
 
     def stop(self) -> None:
         """Stop the audio worker."""
         self._running = False
+        # Set status to inactive when worker stops
+        if self.on_status_change is not None:
+            self.on_status_change(False)
+
+    def sync_music_state(self, is_playing: bool) -> None:
+        """Synchronize the internal music playing state with the actual player state."""
+        logger.info("Synchronizing audio worker music state: %s", is_playing)
+        self._music_playing = is_playing
+        # Clear hit history when state changes to prevent false triggers
+        self._hit_times.clear()
+        # Reset grace period when manually stopped
+        if not is_playing:
+            self._music_start_time = None
 
     def _load_model(self) -> bool:
         """Load the trained model."""
@@ -141,7 +160,7 @@ class AudioWorker:
                 stream_kwargs["device"] = self.input_device
 
         logger.info("Audio worker started - listening for drumstick hits")
-        logger.info("Hit pattern: 3 hits = start music, 1 hit = stop music")
+        logger.info("Hit pattern: 4 hits = start music, 2 hits = stop music")
 
         try:
             with sd.InputStream(**stream_kwargs):
@@ -176,21 +195,36 @@ class AudioWorker:
         self._hit_times = [t for t in self._hit_times if current_time - t <= self._hit_window]
 
         hit_count = len(self._hit_times)
-        logger.info("Recent hits in window: %d", hit_count)
+        logger.info("Recent hits in window: %d (music playing: %s)", hit_count, self._music_playing)
 
         # Determine action based on hit pattern
-        if hit_count >= self._min_hits_for_start and not self._music_playing:
+        if self._music_playing:
+            # Check if we're in the grace period after starting music
+            if (self._music_start_time is not None and
+                current_time - self._music_start_time < self._start_grace_period):
+                logger.info("Ignoring hit during grace period (%.1fs remaining)",
+                           self._start_grace_period - (current_time - self._music_start_time))
+                return
+
+            # When music is playing, need 2 hits to stop it
+            if hit_count >= self._min_hits_for_stop:
+                logger.info("Stopping music (detected %d hits while playing)", hit_count)
+                self._music_playing = False
+                self._music_start_time = None
+                self._hit_times.clear()  # Clear to prevent false start triggers
+                self.on_stop_music()
+                # Note: Don't change status here - worker is still active and listening
+            else:
+                logger.info("Hit detected while playing, need %d hits to stop (current: %d)",
+                           self._min_hits_for_stop, hit_count)
+        elif hit_count >= self._min_hits_for_start:
+            # When music is not playing, need exactly 4 hits to start
             logger.info("Starting music (detected %d hits)", hit_count)
             self._music_playing = True
+            self._music_start_time = current_time  # Record when music started
+            self._hit_times.clear()  # Clear to prevent repeated start triggers
             self.on_start_music()
-            if self.on_status_change is not None:
-                self.on_status_change(True)
-        elif hit_count == 1 and self._music_playing:
-            logger.info("Stopping music (detected 1 hit)")
-            self._music_playing = False
-            self.on_stop_music()
-            if self.on_status_change is not None:
-                self.on_status_change(False)
+            # Note: Don't change status here - worker was already active
 
 
 class RTOnsetDetector:
