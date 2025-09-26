@@ -32,8 +32,8 @@ class AudioWorker:
         sample_rate: int = 44100,
         frame_size: int = 2048,
         hop_size: int = 512,
-        threshold: float = 0.5,
-        min_separation_s: float = 0.03,
+        threshold: float = 0.9,
+        min_separation_s: float = 0.3,
         device: str = "auto",
         input_device: str | None = None,
     ) -> None:
